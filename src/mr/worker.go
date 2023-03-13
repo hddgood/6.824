@@ -1,6 +1,12 @@
 package mr
 
-import "fmt"
+import (
+	"fmt"
+	"io/ioutil"
+	"os"
+	"sort"
+	"strings"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
@@ -24,10 +30,115 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
+	workerId := os.Getpid()
 
+	lastTaskId := -1
+	lastTaskType := -1
+
+	for {
+		arg := &ApplyForTaskArgs{
+			WorkerId:     workerId,
+			LastTaskId:   lastTaskId,
+			LastTaskType: lastTaskType,
+		}
+		reply := &ApplyForTaskReply{}
+		call("Coordinator.ApplyForTask", arg, reply)
+		if reply == nil {
+			goto End
+		}
+		if reply.TaskType == Map {
+			doMapTask(reply.TaskId, workerId, reply.FileName, reply.NReduce, mapf)
+		} else if reply.TaskType == Reduce {
+			doReduceTask(reply.TaskId, workerId, reply.NMap, reducef)
+		}
+	}
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
+End:
+}
 
+func doMapTask(taskId int, workerId int, fileName string, nReduce int, mapf func(string, string) []KeyValue) {
+	file, err := os.Open(fileName)
+	defer file.Close()
+	if err != nil {
+		log.Printf("open file %s fail", fileName)
+		return
+	}
+
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Printf("read file %s fail", fileName)
+		return
+	}
+
+	kv := mapf(fileName, string(content))
+	hashedKva := make(map[int][]KeyValue)
+	for _, val := range kv {
+		hashed := ihash(val.Key) % nReduce
+		hashedKva[hashed] = append(hashedKva[hashed], val)
+	}
+
+	for i := 0; i < nReduce; i++ {
+		outFile, _ := os.Create(tmpmapworkfile(workerId, taskId, i))
+		for _, v := range hashedKva[i] {
+			fmt.Fprintf(outFile, "%v\t%v\n", v.Key, v.Value)
+		}
+		outFile.Close()
+	}
+}
+
+func doReduceTask(taskId int, workerId int, nMap int, reducef func(string, []string) string) {
+	var lines []string
+	for i := 0; i < nMap; i++ {
+		fileName := finalmapfile(taskId, workerId)
+		file, err := os.Open(fileName)
+		defer file.Close()
+		if err != nil {
+			log.Printf("open file %s fail", fileName)
+			return
+		}
+		content, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Fatalf("文件 %s 读取失败！", fileName)
+		}
+		lines = append(lines, strings.Split(string(content), "\n")...)
+	}
+	var kva []KeyValue
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		kva = append(kva, KeyValue{
+			Key:   parts[0],
+			Value: parts[1],
+		})
+	}
+
+	// 按 Key 对输入数据进行排序
+	sort.Sort(Bykey())
+
+	ofile, _ := os.Create(tmpreduceworkfile(workerId, taskId))
+
+	// 按 Key 对中间结果的 Value 进行归并，传递至 Reduce 函数
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		var values []string
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values)
+
+		// 写出至结果文件
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+		i = j
+	}
+	ofile.Close()
 }
 
 // example function to show how to make an RPC call to the coordinator.

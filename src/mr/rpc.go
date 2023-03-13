@@ -6,7 +6,11 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
+import (
+	"fmt"
+	"os"
+	"time"
+)
 import "strconv"
 
 //
@@ -23,6 +27,37 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
+const (
+	Map = iota
+	Reduce
+	Done
+)
+
+type Task struct {
+	Id           int
+	Type         int
+	MapInputFile string
+	WorkerId     int
+	DeadLine     time.Time
+}
+
+func GetTaskId(t, idx int) string {
+	return fmt.Sprintf("%d--%d", t, idx)
+}
+
+type ApplyForTaskArgs struct {
+	WorkerId     int
+	LastTaskId   int
+	LastTaskType int
+}
+
+type ApplyForTaskReply struct {
+	TaskId   int
+	TaskType int
+	FileName string
+	NReduce  int
+	NMap     int
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
